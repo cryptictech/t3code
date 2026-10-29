@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { HomeProjectScope } from "../home/homeThreadList";
 import {
+  filterProjectScopes,
   getProjectScopeSelectionTarget,
   newTaskDestination,
   resolveDraftProjectSelection,
@@ -53,6 +54,21 @@ function makeScope(projects: ReadonlyArray<EnvironmentProject>): HomeProjectScop
     })),
   };
 }
+
+describe("filterProjectScopes", () => {
+  it("limits grouped projects and search to the selected environment", () => {
+    const mac = makeProject("mac", "mac", { workspaceRoot: "/mac/unique" });
+    const server = makeProject("server", "server", { workspaceRoot: "/server/repo" });
+    const scope = makeScope([mac, server]);
+    const filtered = filterProjectScopes([scope], "", EnvironmentId.make("server"));
+    expect(filtered[0]?.projects).toEqual([server]);
+    expect(filtered[0]?.representative).toBe(server);
+    expect(filtered[0]?.projectRefs).toEqual([{ environmentId: server.environmentId, projectId: server.id }]);
+    expect(filterProjectScopes([scope], "unique", EnvironmentId.make("server"))).toEqual([]);
+    expect(filterProjectScopes([scope], "", EnvironmentId.make("other"))).toEqual([]);
+    expect(filterProjectScopes([scope], "unique", null)).toEqual([scope]);
+  });
+});
 
 describe("getProjectScopeSelectionTarget", () => {
   it("prefers a connected copy of a project that spans environments", () => {

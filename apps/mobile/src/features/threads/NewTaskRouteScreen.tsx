@@ -16,6 +16,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, View } from "react-native";
@@ -29,7 +30,7 @@ import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
+import { useRemoteConnectionStatus, useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import { useWorkspaceState } from "../../state/workspace";
 
@@ -112,6 +113,9 @@ function NewTaskHeader(props: {
   readonly canAddProject: boolean;
   readonly searchText: string;
   readonly onSearchTextChange: (text: string) => void;
+  readonly environments: ReadonlyArray<{ environmentId: EnvironmentId; label: string }>;
+  readonly filterEnvironmentId: EnvironmentId | null;
+  readonly onFilterEnvironmentChange: (id: EnvironmentId | null) => void;
 }) {
   const navigation = useNavigation();
   const goBack = () => {
@@ -138,6 +142,34 @@ function NewTaskHeader(props: {
               ]
             : []
         }
+        menus={
+          props.environments.length > 0
+            ? [{
+                title: "Filter projects",
+                icon: props.filterEnvironmentId === null
+                  ? "line.3.horizontal.decrease.circle"
+                  : "line.3.horizontal.decrease.circle.fill",
+                items: [{
+                  id: "environment",
+                  title: "Environment",
+                  items: [
+                    {
+                      id: "all",
+                      title: "All environments",
+                      selected: props.filterEnvironmentId === null,
+                      onPress: () => props.onFilterEnvironmentChange(null),
+                    },
+                    ...props.environments.map((environment) => ({
+                      id: environment.environmentId,
+                      title: environment.label,
+                      selected: props.filterEnvironmentId === environment.environmentId,
+                      onPress: () => props.onFilterEnvironmentChange(environment.environmentId),
+                    })),
+                  ],
+                }],
+              }]
+            : []
+        }
         search={{
           value: props.searchText,
           onChangeText: props.onSearchTextChange,
@@ -151,6 +183,14 @@ function NewTaskHeader(props: {
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const [searchText, setSearchText] = useState("");
+  const [filterEnvironmentId, setFilterEnvironmentId] = useState<EnvironmentId | null>(null);
+  const { savedConnectionsById } = useSavedRemoteConnections();
+  const environments = Object.values(savedConnectionsById)
+    .map((connection) => ({
+      environmentId: connection.environmentId,
+      label: connection.environmentLabel,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
   const { projectScopes, selectedEnvironmentId, setProject } = useNewTaskFlow();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
@@ -178,7 +218,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
       ),
   );
-  const visibleScopes = filterProjectScopes(listScopes, searchText);
+  const visibleScopes = filterProjectScopes(listScopes, searchText, filterEnvironmentId);
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
     ? (projects.find(
@@ -204,11 +244,10 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       ) !== null,
   );
   const scratchEnvironment =
-    scratchEnvironments.find(
-      (environment) => environment.environmentId === selectedEnvironmentId,
-    ) ??
-    scratchEnvironments[0] ??
-    null;
+    filterEnvironmentId !== null
+      ? (scratchEnvironments.find((environment) => environment.environmentId === filterEnvironmentId) ?? null)
+      : (scratchEnvironments.find((environment) => environment.environmentId === selectedEnvironmentId) ??
+        scratchEnvironments[0] ?? null);
   const canStartScratch = scratchEnvironment !== null && reservedDestinationProject === null;
   const scratchStartInFlightRef = useRef(false);
 
@@ -312,6 +351,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         canAddProject={catalogState.hasReadyEnvironment}
         searchText={searchText}
         onSearchTextChange={setSearchText}
+        environments={environments}
+        filterEnvironmentId={filterEnvironmentId}
+        onFilterEnvironmentChange={setFilterEnvironmentId}
       />
 
       <ScreenContent>
@@ -450,7 +492,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                 No matching projects
               </Text>
               <Text className="text-center text-sm leading-normal text-foreground-muted">
-                Try a different project name or workspace path.
+                Try a different search or environment filter.
               </Text>
             </View>
           ) : (
@@ -466,7 +508,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                 const hasMultipleProjects = scope.projects.length > 1;
                 const selectionTarget = getProjectScopeSelectionTarget(
                   scope,
-                  selectedEnvironmentId,
+                  filterEnvironmentId ?? selectedEnvironmentId,
                   connectedEnvironmentIds,
                 );
                 if (Platform.OS === "android") {
