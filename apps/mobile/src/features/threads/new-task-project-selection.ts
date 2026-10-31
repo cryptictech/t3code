@@ -1,5 +1,7 @@
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { repositoryGroupingKeyOf, type EnvironmentId } from "@t3tools/contracts";
+import { repositoryGroupingKeyOf, type EnvironmentId, type ServerConfig } from "@t3tools/contracts";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { HomeProjectScope } from "../home/homeThreadList";
@@ -36,21 +38,58 @@ export function filterProjectScopes(
 ): ReadonlyArray<HomeProjectScope> {
   const query = searchText.trim().toLowerCase();
   return scopes.flatMap((scope) => {
-    const projects = environmentId === null
-      ? scope.projects
-      : scope.projects.filter((project) => project.environmentId === environmentId);
+    const projects =
+      environmentId === null
+        ? scope.projects
+        : scope.projects.filter((project) => project.environmentId === environmentId);
     if (projects.length === 0) return [];
-    if (query && !scope.title.toLowerCase().includes(query) && !projects.some(
-      (project) => project.title.toLowerCase().includes(query) || project.workspaceRoot.toLowerCase().includes(query),
-    )) return [];
+    if (
+      query &&
+      !scope.title.toLowerCase().includes(query) &&
+      !projects.some(
+        (project) =>
+          project.title.toLowerCase().includes(query) ||
+          project.workspaceRoot.toLowerCase().includes(query),
+      )
+    )
+      return [];
     if (environmentId === null) return [scope];
-    return [{
-      ...scope,
-      projects,
-      representative: projects[0]!,
-      projectRefs: scope.projectRefs.filter((ref) => ref.environmentId === environmentId),
-    }];
+    return [
+      {
+        ...scope,
+        projects,
+        representative: projects[0]!,
+        projectRefs: scope.projectRefs.filter((ref) => ref.environmentId === environmentId),
+      },
+    ];
   });
+}
+
+// Cached configuration reserves the row; connection readiness only gates activation.
+export function resolveNewTaskScratchOption(input: {
+  readonly environments: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly connectionState: EnvironmentConnectionPhase;
+  }>;
+  readonly serverConfigs: ReadonlyMap<EnvironmentId, Pick<ServerConfig, "scratchWorkspaceRoot">>;
+  readonly selectedEnvironmentId: EnvironmentId | null;
+}) {
+  const offering = input.environments.filter(
+    (environment) =>
+      (input.serverConfigs.get(environment.environmentId)?.scratchWorkspaceRoot ?? null) !== null,
+  );
+  const ready = offering.filter(
+    (environment) =>
+      availableScratchWorkspaceRoot(
+        environment.connectionState,
+        input.serverConfigs.get(environment.environmentId),
+      ) !== null,
+  );
+  const candidates = ready.length > 0 ? ready : offering;
+  const environment =
+    candidates.find((candidate) => candidate.environmentId === input.selectedEnvironmentId) ??
+    candidates[0];
+  return environment ? { environmentId: environment.environmentId, ready: ready.length > 0 } : null;
 }
 
 export function resolveEnvironmentProjectMatch(
@@ -137,10 +176,12 @@ export function newTaskDestination(options: {
     options.projects.find(
       (project) => project.environmentId === ref.environmentId && project.id === ref.projectId,
     );
+  // A remembered project that was archived since opens the picker; the current one still wins.
+  const last = find(options.lastProject);
   const project =
     options.useLastProject === false
       ? undefined
-      : (find(options.currentProject) ?? find(options.lastProject));
+      : (find(options.currentProject) ?? (last?.archivedAt == null ? last : undefined));
   return project
     ? {
         draft: {

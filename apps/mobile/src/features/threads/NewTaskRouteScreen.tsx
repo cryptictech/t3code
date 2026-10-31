@@ -10,7 +10,7 @@ import {
   type StaticScreenProps,
 } from "@react-navigation/native";
 import { SymbolView } from "../../components/ui/AppSymbol";
-import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
+import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import {
   isAtomCommandInterrupted,
@@ -30,13 +30,20 @@ import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useRemoteConnectionStatus, useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
+import {
+  useRemoteConnectionStatus,
+  useSavedRemoteConnections,
+} from "../../state/use-remote-environment-registry";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import { useWorkspaceState } from "../../state/workspace";
 
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 import { useNewTaskFlow } from "./new-task-flow-provider";
-import { filterProjectScopes, getProjectScopeSelectionTarget } from "./new-task-project-selection";
+import {
+  filterProjectScopes,
+  getProjectScopeSelectionTarget,
+  resolveNewTaskScratchOption,
+} from "./new-task-project-selection";
 import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 type NewTaskRouteParams = {
@@ -144,30 +151,35 @@ function NewTaskHeader(props: {
         }
         menus={
           props.environments.length > 0
-            ? [{
-                title: "Filter projects",
-                icon: props.filterEnvironmentId === null
-                  ? "line.3.horizontal.decrease.circle"
-                  : "line.3.horizontal.decrease.circle.fill",
-                items: [{
-                  id: "environment",
-                  title: "Environment",
+            ? [
+                {
+                  title: "Filter projects",
+                  icon:
+                    props.filterEnvironmentId === null
+                      ? "line.3.horizontal.decrease.circle"
+                      : "line.3.horizontal.decrease.circle.fill",
                   items: [
                     {
-                      id: "all",
-                      title: "All environments",
-                      selected: props.filterEnvironmentId === null,
-                      onPress: () => props.onFilterEnvironmentChange(null),
+                      id: "environment",
+                      title: "Environment",
+                      items: [
+                        {
+                          id: "all",
+                          title: "All environments",
+                          selected: props.filterEnvironmentId === null,
+                          onPress: () => props.onFilterEnvironmentChange(null),
+                        },
+                        ...props.environments.map((environment) => ({
+                          id: environment.environmentId,
+                          title: environment.label,
+                          selected: props.filterEnvironmentId === environment.environmentId,
+                          onPress: () => props.onFilterEnvironmentChange(environment.environmentId),
+                        })),
+                      ],
                     },
-                    ...props.environments.map((environment) => ({
-                      id: environment.environmentId,
-                      title: environment.label,
-                      selected: props.filterEnvironmentId === environment.environmentId,
-                      onPress: () => props.onFilterEnvironmentChange(environment.environmentId),
-                    })),
                   ],
-                }],
-              }]
+                },
+              ]
             : []
         }
         search={{
@@ -212,7 +224,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const screenTitle = incomingShare ? "Start a task" : "Choose project";
   const projectEmptyState = deriveProjectEmptyState(catalogState);
   const serverConfigs = useServerConfigs();
-  const listScopes = projectScopes.filter(
+  const listScopes = pickableProjectGroups(projectScopes).filter(
     (scope) =>
       !scope.projects.every((project) =>
         isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
@@ -236,19 +248,18 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   const openScratch = useAtomCommand(projectEnvironment.openScratch, {
     reportFailure: false,
   });
-  const scratchEnvironments = connectedEnvironments.filter(
-    (environment) =>
-      availableScratchWorkspaceRoot(
-        environment.connectionState,
-        serverConfigs.get(environment.environmentId),
-      ) !== null,
-  );
-  const scratchEnvironment =
-    filterEnvironmentId !== null
-      ? (scratchEnvironments.find((environment) => environment.environmentId === filterEnvironmentId) ?? null)
-      : (scratchEnvironments.find((environment) => environment.environmentId === selectedEnvironmentId) ??
-        scratchEnvironments[0] ?? null);
-  const canStartScratch = scratchEnvironment !== null && reservedDestinationProject === null;
+  const scratchOption =
+    reservedDestinationProject === null
+      ? resolveNewTaskScratchOption({
+          environments: connectedEnvironments.filter(
+            (environment) =>
+              filterEnvironmentId === null || environment.environmentId === filterEnvironmentId,
+          ),
+          serverConfigs,
+          selectedEnvironmentId: filterEnvironmentId ?? selectedEnvironmentId,
+        })
+      : null;
+  const canStartScratch = scratchOption?.ready === true;
   const scratchStartInFlightRef = useRef(false);
 
   async function selectProject(project: EnvironmentProject): Promise<void> {
@@ -288,8 +299,8 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
   }
 
   async function startScratch(): Promise<void> {
-    if (!scratchEnvironment || scratchStartInFlightRef.current) return;
-    const environmentId = scratchEnvironment.environmentId;
+    if (!canStartScratch || !scratchOption || scratchStartInFlightRef.current) return;
+    const environmentId = scratchOption.environmentId;
     scratchStartInFlightRef.current = true;
     const result = await openScratch({ environmentId, input: {} });
     if (result._tag === "Failure") {
@@ -373,13 +384,14 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
               : {}),
           }}
         >
-          {canStartScratch && listScopes.length > 0 ? (
+          {scratchOption !== null && listScopes.length > 0 ? (
             Platform.OS === "android" ? (
               <View collapsable={false} className="overflow-hidden rounded-[28px] bg-grouped-card">
                 <NavigationRow
                   className="bg-grouped-card"
                   title="No project"
                   subtitle="Start a task without a project"
+                  disabled={!canStartScratch}
                   onPress={() => void startScratch()}
                   leading={
                     <SymbolView
@@ -396,8 +408,12 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="No project"
+                  disabled={!canStartScratch}
                   onPress={() => void startScratch()}
-                  className="flex-row items-center gap-3 bg-grouped-card px-4 py-3.5"
+                  className={cn(
+                    "flex-row items-center gap-3 bg-grouped-card px-4 py-3.5",
+                    !canStartScratch && "opacity-45",
+                  )}
                 >
                   <View className="h-7 w-7 items-center justify-center">
                     <SymbolView
